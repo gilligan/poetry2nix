@@ -1,12 +1,18 @@
 { pkgs ? import <nixpkgs> {}
 , lib ? pkgs.lib
 , poetry ? null
-,
+, poetryLib ? import ./lib.nix { inherit lib; }
 }:
 
 let
+  inherit (poetryLib) isCompatible readTOML;
 
-  importTOML = path: builtins.fromTOML (builtins.readFile path);
+  defaultPoetryOverrides = import ./overrides.nix { inherit pkgs; };
+
+  mkEvalPep508 = import ./pep508.nix {
+    inherit lib;
+    stdenv = pkgs.stdenv;
+  };
 
   getAttrDefault = attribute: set: default: (
     if builtins.hasAttr attribute set
@@ -32,64 +38,10 @@ let
       }
   );
 
-  getAttrPath = attrPath: set: (
-    builtins.foldl'
-      (acc: v: if builtins.typeOf acc == "set" && builtins.hasAttr v acc then acc."${v}" else null)
-      set (lib.splitString "." attrPath)
-  );
-
-  satisfiesSemver = (import ./semver.nix { inherit lib; }).satisfies;
-
-  # Check Python version is compatible with package
-  isCompatible = pythonVersion: pythonVersions: let
-    operators = {
-      "||" = cond1: cond2: cond1 || cond2;
-      "," = cond1: cond2: cond1 && cond2; # , means &&
-    };
-    tokens = builtins.filter (x: x != "") (builtins.split "(,|\\|\\|)" pythonVersions);
-  in
-    (
-      builtins.foldl' (
-        acc: v: let
-          isOperator = builtins.typeOf v == "list";
-          operator = if isOperator then (builtins.elemAt v 0) else acc.operator;
-        in
-          if isOperator then (acc // { inherit operator; }) else {
-            inherit operator;
-            state = operators."${operator}" acc.state (satisfiesSemver pythonVersion v);
-          }
-      )
-        {
-          operator = ",";
-          state = true;
-        }
-        tokens
-    ).state;
-
-  extensions = pkgs.lib.importJSON ./extensions.json;
-  getExtension = filename: builtins.elemAt
-    (builtins.filter (ext: builtins.match "^.*\.${ext}" filename != null) extensions)
-    0;
-  supportedRe = ("^.*?(" + builtins.concatStringsSep "|" extensions + ")");
-  fileSupported = fname: builtins.match supportedRe fname != null;
-
-  defaultPoetryOverrides = import ./overrides.nix { inherit pkgs; };
-
-  isBdist = f: builtins.match "^.*?whl$" f.file != null;
-  isSdist = f: ! isBdist f;
-
-  mkEvalPep508 = import ./pep508.nix {
-    inherit lib;
-    stdenv = pkgs.stdenv;
-  };
-
-  selectWhl = (
-    import ./pep425.nix {
-      inherit lib;
-      inherit (pkgs) stdenv;
-      python = pkgs.python3;
-    }
-  ).select;
+  fileSupported = let
+    extensions = pkgs.lib.importJSON ./extensions.json;
+    supportedRe = ("^.*?(" + builtins.concatStringsSep "|" extensions + ")");
+  in fname: builtins.match supportedRe fname != null;
 
   #
   # Returns the appropriate manylinux dependencies and string representation for the file specified
@@ -112,8 +64,8 @@ let
     , python ? pkgs.python3
     , ...
     }@attrs: let
-      pyProject = importTOML pyproject;
-      poetryLock = importTOML poetrylock;
+      pyProject = readTOML pyproject;
+      poetryLock = readTOML poetrylock;
 
       files = getAttrDefault "files" (getAttrDefault "metadata" poetryLock {}) {};
 
@@ -124,94 +76,55 @@ let
 
       poetryPkg = poetry.override { inherit python; };
 
+      inherit (
+        import ./pep425.nix {
+          inherit lib python;
+          inherit (pkgs) stdenv;
+        }
+      ) selectWheel;
+
       # Create an overriden version of pythonPackages
       #
       # We need to avoid mixing multiple versions of pythonPackages in the same
       # closure as python can only ever have one version of a dependency
       py = let
         packageOverrides = self: super: let
-          getDep = depName: if builtins.hasAttr depName self then self."${depName}" else null;
+          getDep = depName: if builtins.hasAttr depName self then self."${depName}" else throw "foo";
 
-          mkPoetryDep = pkgMeta: let
-            pkgFiles = let
-              all = getAttrDefault pkgMeta.name files [];
-            in
-              builtins.filter (f: fileSupported f.file) all;
-
-            filterFile = fname: builtins.match ("^.*" + builtins.replaceStrings [ "." ] [ "\\." ] pkgMeta.version + ".*$") fname != null;
-            filteredFiles = builtins.filter (f: filterFile f.file) pkgFiles;
-
-            binaryDist = selectWhl filteredFiles;
-            sourceDist = builtins.filter isSdist filteredFiles;
-            file = if (builtins.length sourceDist) > 0 then builtins.head sourceDist else builtins.head binaryDist;
-
-            format =
-              if isBdist file
-              then "wheel"
-              else "setuptools";
-
+          pkgFiles = name: let
+            all = getAttrDefault name files [];
           in
-            self.buildPythonPackage {
-              pname = pkgMeta.name;
-              version = pkgMeta.version;
+            builtins.filter (f: fileSupported f.file) all;
 
-              doCheck = false; # We never get development deps
-              dontStrip = true;
-
-              inherit format;
-
-              nativeBuildInputs = [ pkgs.autoPatchelfHook ];
-              buildInputs =  (getManyLinuxDeps file.file).pkg;
-              NIX_PYTHON_MANYLINUX = (getManyLinuxDeps file.file).str;
-
-              propagatedBuildInputs = let
-                depAttrs = getAttrDefault "dependencies" pkgMeta {};
-                # Some dependencies like django gets the attribute name django
-                # but dependencies try to access Django
-                dependencies = builtins.map (d: lib.toLower d) (builtins.attrNames depAttrs);
-              in
-                builtins.map getDep dependencies;
-
-              meta = {
-                broken = ! isCompatible python.version pkgMeta.python-versions;
-                license = [];
-              };
-
-              src = fetchFromPypi {
-                pname = pkgMeta.name;
-                inherit (file) file hash;
-                # We need to retrieve kind from the interpreter and the filename of the package
-                # Interpreters should declare what wheel types they're compatible with (python type + ABI)
-                # Here we can then choose a file based on that info.
-                kind = if format == "setuptools" then "source" else (builtins.elemAt (lib.strings.splitString "-" file.file) 2);
-              };
-            };
+          mkPoetryDep = self.callPackage ./mk-poetry-dep.nix {
+            inherit fetchFromPypi getManyLinuxDeps lib python isCompatible selectWheel;
+          };
 
           # Filter packages by their PEP508 markers
-          pkgsWithFilter = builtins.map (
-            pkgMeta: let
-              f = if builtins.hasAttr "marker" pkgMeta then (!evalPep508 pkgMeta.marker) else false;
-            in
-              pkgMeta // { p2nixFiltered = f; }
-          ) poetryLock.package;
+          partitions = lib.partition (
+            pkgMeta: if builtins.hasAttr "marker" pkgMeta then (evalPep508 pkgMeta.marker) else true
+            ) poetryLock.package;
+
+          compatible = partitions.right;
+          incompatible = partitions.wrong;
 
           lockPkgs = builtins.map (
             pkgMeta: {
               name = pkgMeta.name;
               value = let
-                drv = mkPoetryDep pkgMeta;
+                drv = mkPoetryDep (pkgMeta // { files = pkgFiles pkgMeta.name; });
                 override = getAttrDefault pkgMeta.name overrides (_: _: drv: drv);
               in
                 if drv != null then (override self super drv) else null;
             }
-          ) (builtins.filter (pkgMeta: !pkgMeta.p2nixFiltered) pkgsWithFilter);
+          ) compatible;
 
           # Null out any filtered packages, we don't want python.pkgs from nixpkgs
           nulledPkgs = (
             builtins.listToAttrs
               (
                 builtins.map (x: { name = x.name; value = null; })
-                  (builtins.filter (pkgMeta: pkgMeta.p2nixFiltered) pkgsWithFilter)
+        incompatible
               )
           );
 
@@ -237,7 +150,7 @@ let
       };
 
       getBuildSystemPkgs = let
-        buildSystem = getAttrPath
+        buildSystem = lib.getAttrFromPath
           "build-system.build-backend" pyProject;
       in
         knownBuildSystems.${buildSystem} or (throw "unsupported build system ${buildSystem}");
