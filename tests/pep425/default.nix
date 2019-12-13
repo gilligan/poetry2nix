@@ -143,4 +143,35 @@ lib.debug.runTests {
         expected = [ { file = "cffi-1.13.2-cp27-cp27m-manylinux1_x86_64.whl"; } ];
       };
 
+  testMsgPack =
+    let
+      cs = [
+        {file = "msgpack-0.6.2-cp27-cp27m-manylinux1_i686.whl"; }
+        {file = "msgpack-0.6.2-cp27-cp27m-manylinux1_x86_64.whl"; }
+        {file = "msgpack-0.6.2-cp27-cp27m-win32.whl"; }
+        {file = "msgpack-0.6.2-cp27-cp27m-win_amd64.whl"; }
+        {file = "msgpack-0.6.2-cp27-cp27mu-manylinux1_i686.whl"; }
+        {file = "msgpack-0.6.2-cp27-cp27mu-manylinux1_x86_64.whl"; }
+        {file = "msgpack-0.6.2-cp35-cp35m-macosx_10_6_intel.whl"; }
+        {file = "msgpack-0.6.2-cp35-cp35m-manylinux1_i686.whl"; }
+        {file = "msgpack-0.6.2-cp35-cp35m-manylinux1_x86_64.whl"; }
+        {file = "msgpack-0.6.2-cp36-cp36m-macosx_10_6_intel.whl"; }
+        {file = "msgpack-0.6.2-cp36-cp36m-manylinux1_i686.whl"; }
+        {file = "msgpack-0.6.2-cp36-cp36m-manylinux1_x86_64.whl"; }
+        {file = "msgpack-0.6.2-cp36-cp36m-win32.whl"; }
+        {file = "msgpack-0.6.2-cp36-cp36m-win_amd64.whl"; }
+        {file = "msgpack-0.6.2-cp37-cp37m-macosx_10_14_x86_64.whl"; }
+        {file = "msgpack-0.6.2-cp37-cp37m-macosx_10_9_x86_64.whl"; }
+        {file = "msgpack-0.6.2-cp37-cp37m-manylinux1_i686.whl"; }
+        {file = "msgpack-0.6.2-cp37-cp37m-manylinux1_x86_64.whl"; }
+        {file = "msgpack-0.6.2-cp37-cp37m-win32.whl"; }
+        {file = "msgpack-0.6.2-cp37-cp37m-win_amd64.whl"; }
+        {file = "msgpack-0.6.2.tar.gz"; }
+      ];
+    in
+      {
+        expr = pep425Python37.selectWheel cs;
+        expected = [ { file = "msgpack-0.6.2-cp37-cp37m-manylinux1_x86_64.whl"; } ];
+      };
+
 }

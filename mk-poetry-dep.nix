@@ -17,11 +17,15 @@
   ...
 }: let
 
+  supportedExtensions = lib.importJSON ./extensions.json;
+  supportedRegex = ("^.*?(" + builtins.concatStringsSep "|" supportedExtensions + ")");
+
   isBdist = f: builtins.match "^.*?whl$" f.file != null;
   isSdist = f: ! isBdist f;
 
-  filterFile = fname: builtins.match ("^.*" + builtins.replaceStrings [ "." ] [ "\\." ] version + ".*$") fname != null;
-  filteredFiles = builtins.filter (f: filterFile f.file) files;
+  matchesVersion = fname: builtins.match ("^.*" + builtins.replaceStrings [ "." ] [ "\\." ] version + ".*$") fname != null;
+  hasSupportedExtension = fname: builtins.match supportedRegex fname != null;
+  filteredFiles = builtins.filter (f: matchesVersion f.file && hasSupportedExtension f.file) files;
 
   binaryDist = selectWheel filteredFiles;
   sourceDist = builtins.filter isSdist filteredFiles;
@@ -59,8 +63,9 @@ in
     };
 
     src = fetchFromPypi {
-      pname = name;
-      inherit (file) file hash;
+      pname = lib.debug.traceVal(name);
+      file = lib.debug.traceVal(file.file);
+      inherit (file) hash;
     # We need to retrieve kind from the interpreter and the filename of the package
     # Interpreters should declare what wheel types they're compatible with (python type + ABI)
     # Here we can then choose a file based on that info.

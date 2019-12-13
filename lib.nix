@@ -2,12 +2,13 @@
 let
   inherit (import ./semver.nix { inherit lib; }) satisfiesSemver;
 
-  # Check Python version is compatible with package
+  # Returns true if pythonVersion matches with the expression in pythonVersions
   isCompatible = pythonVersion: pythonVersions: let
     operators = {
       "||" = cond1: cond2: cond1 || cond2;
       "," = cond1: cond2: cond1 && cond2; # , means &&
     };
+    # split string at "," and "||"
     tokens = builtins.filter (x: x != "") (builtins.split "(,|\\|\\|)" pythonVersions);
   in
     (

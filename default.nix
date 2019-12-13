@@ -38,11 +38,6 @@ let
       }
   );
 
-  fileSupported = let
-    extensions = pkgs.lib.importJSON ./extensions.json;
-    supportedRe = ("^.*?(" + builtins.concatStringsSep "|" extensions + ")");
-  in fname: builtins.match supportedRe fname != null;
-
   #
   # Returns the appropriate manylinux dependencies and string representation for the file specified
   #
@@ -67,7 +62,7 @@ let
       pyProject = readTOML pyproject;
       poetryLock = readTOML poetrylock;
 
-      files = getAttrDefault "files" (getAttrDefault "metadata" poetryLock {}) {};
+      files = lib.getAttrFromPath ["metadata" "files"] poetryLock;
 
       specialAttrs = [ "pyproject" "poetrylock" "overrides" ];
       passedAttrs = builtins.removeAttrs attrs specialAttrs;
@@ -91,45 +86,34 @@ let
         packageOverrides = self: super: let
           getDep = depName: if builtins.hasAttr depName self then self."${depName}" else throw "foo";
 
-          pkgFiles = name: let
-            all = getAttrDefault name files [];
-          in
-            builtins.filter (f: fileSupported f.file) all;
-
-          mkPoetryDep = self.callPackage ./mk-poetry-dep.nix {
-            inherit fetchFromPypi getManyLinuxDeps lib python isCompatible selectWheel;
-          };
-
           # Filter packages by their PEP508 markers
-          partitions = lib.partition (
-            pkgMeta: if builtins.hasAttr "marker" pkgMeta then (evalPep508 pkgMeta.marker) else true
-            ) poetryLock.package;
+          partitions = let
+            supportsPythonVersion = pkgMeta: if pkgMeta ? marker then (evalPep508 pkgMeta.marker) else true;
+          in
+            lib.partition supportsPythonVersion poetryLock.package;
 
           compatible = partitions.right;
           incompatible = partitions.wrong;
 
-          lockPkgs = builtins.map (
-            pkgMeta: {
+          lockPkgs = builtins.listToAttrs (builtins.map (
+            pkgMeta: rec {
               name = pkgMeta.name;
               value = let
-                drv = mkPoetryDep (pkgMeta // { files = pkgFiles pkgMeta.name; });
+                drv = self.mkPoetryDep (pkgMeta // { files = files.${name}; });
                 override = getAttrDefault pkgMeta.name overrides (_: _: drv: drv);
               in
-                if drv != null then (override self super drv) else null;
+                override self super drv;
             }
-          ) compatible;
+          ) compatible);
 
           # Null out any filtered packages, we don't want python.pkgs from nixpkgs
-          nulledPkgs = (
-            builtins.listToAttrs
-              (
-                builtins.map (x: { name = x.name; value = null; })
-        incompatible
-              )
-          );
-
+          nulledPkgs = builtins.listToAttrs (builtins.map (x: { name = x.name; value = null; }) incompatible);
         in
-          nulledPkgs // builtins.listToAttrs lockPkgs;
+        {
+          mkPoetryDep = self.callPackage ./mk-poetry-dep.nix {
+            inherit fetchFromPypi getManyLinuxDeps lib python isCompatible selectWheel;
+          };
+        } // nulledPkgs // lockPkgs;
       in
         python.override { inherit packageOverrides; self = py; };
       pythonPackages = py.pkgs;
@@ -150,8 +134,7 @@ let
       };
 
       getBuildSystemPkgs = let
-        buildSystem = lib.getAttrFromPath
-          "build-system.build-backend" pyProject;
+        buildSystem = lib.getAttrFromPath [ "build-system" "build-backend" ] pyProject;
       in
         knownBuildSystems.${buildSystem} or (throw "unsupported build system ${buildSystem}");
     in
